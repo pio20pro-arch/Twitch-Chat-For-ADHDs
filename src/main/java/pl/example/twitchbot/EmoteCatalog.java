@@ -30,7 +30,7 @@ import java.util.regex.Pattern;
 
 final class EmoteCatalog implements AutoCloseable {
     private static final Pattern NON_WHITESPACE_TOKEN = Pattern.compile("\\S+");
-    private static final long CATALOG_INDEX_MAX_AGE_MS = Duration.ofHours(24).toMillis();
+    private static final long CATALOG_REFRESH_INTERVAL_MS = Duration.ofHours(6).toMillis();
     private static final int IMAGE_DOWNLOAD_THREADS = 100;
     private final String channelLogin;
     private final ObjectMapper json = new ObjectMapper();
@@ -65,7 +65,6 @@ final class EmoteCatalog implements AutoCloseable {
         boolean freshIndex = loadCatalogIndex();
         if (freshIndex) {
             channelLoaded.set(true);
-            System.out.printf("Katalog emotek z indeksu dyskowego: %d kodów.%n", size());
         } else {
             CompletableFuture.runAsync(this::loadGlobals, catalogExecutor);
             CompletableFuture.runAsync(this::resolveAndLoadChannel, catalogExecutor);
@@ -85,7 +84,7 @@ final class EmoteCatalog implements AutoCloseable {
                     channelLoaded.set(true);
                     saveCatalogIndex();
                 } else {
-                    channelRetryAfterMillis = System.currentTimeMillis() + Duration.ofSeconds(30).toMillis();
+                    channelRetryAfterMillis = System.currentTimeMillis() + CATALOG_REFRESH_INTERVAL_MS;
                 }
             } finally {
                 channelLoading.set(false);
@@ -98,12 +97,12 @@ final class EmoteCatalog implements AutoCloseable {
             JsonNode room = fetchJson("https://api.frankerfacez.com/v1/room/" + channelLogin).path("room");
             String twitchChannelId = room.path("twitch_id").asText("");
             if (twitchChannelId.isBlank()) {
-                throw new IllegalStateException("FFZ nie zwrocil identyfikatora Twitch");
+                throw new IllegalStateException("FFZ did not return a Twitch channel ID");
             }
             loadChannelAsync(twitchChannelId);
         } catch (RuntimeException exception) {
             System.err.println(
-                "Nie ustalono identyfikatora kanału #" + channelLogin + ": " + exception.getMessage()
+                "Could not determine the Twitch channel ID for #" + channelLogin + ": " + exception.getMessage()
             );
         }
     }
@@ -138,11 +137,12 @@ final class EmoteCatalog implements AutoCloseable {
                         "https://static-cdn.jtvnw.net/emoticons/v2/" + id + "/default/dark/1.0",
                         "https://static-cdn.jtvnw.net/emoticons/v2/" + id + "/default/dark/2.0",
                         true,
-                        200
+                        200,
+                        false
                     );
                 }
             } catch (RuntimeException ignored) {
-                // Uszkodzony pojedynczy zakres nie może zatrzymać czatu.
+                // One malformed range must not stop the chat.
             }
         }
     }
@@ -266,6 +266,7 @@ final class EmoteCatalog implements AutoCloseable {
 
     List<EmoteInfo> sidebarEntries() {
         return emotes.values().stream()
+            .filter(Emote::sidebarVisible)
             .filter(emote -> emote.imageUrl() != null && !emote.imageUrl().isBlank())
             .map(emote -> new EmoteInfo(
                 emote.code(),
@@ -303,7 +304,7 @@ final class EmoteCatalog implements AutoCloseable {
         );
         future.thenAccept(onLoaded).exceptionally(exception -> {
             imageLoads.remove(url, future);
-            System.err.println("Nie wczytano obrazu emotki " + emote.code() + ": " + exception.getMessage());
+            System.err.println("Could not load the image for emote " + emote.code() + ": " + exception.getMessage());
             if (onFailed != null) onFailed.run();
             return null;
         });
@@ -320,23 +321,21 @@ final class EmoteCatalog implements AutoCloseable {
         loadSafely("FFZ global", () -> loadFfz(fetchJson(
             "https://api.frankerfacez.com/v1/set/global"
         ), 10));
-        System.out.printf("Katalog emotek globalnych: %d kodów.%n", size());
         saveCatalogIndex();
         catalogUpdatedAction.run();
     }
 
     private boolean loadChannel(String twitchChannelId) {
-        boolean sevenTvLoaded = loadSafely("7TV kanał", () -> loadSevenTv(firstJson(
+        boolean sevenTvLoaded = loadSafely("7TV channel", () -> loadSevenTv(firstJson(
             "https://7tv.io/v3/users/twitch/" + twitchChannelId,
             "https://api.7tv.app/v3/users/twitch/" + twitchChannelId
         ), 130));
-        boolean bttvLoaded = loadSafely("BTTV kanał", () -> loadBttv(fetchJson(
+        boolean bttvLoaded = loadSafely("BTTV channel", () -> loadBttv(fetchJson(
             "https://api.betterttv.net/3/cached/users/twitch/" + twitchChannelId
         ), 120));
-        boolean ffzLoaded = loadSafely("FFZ kanał", () -> loadFfz(fetchJson(
+        boolean ffzLoaded = loadSafely("FFZ channel", () -> loadFfz(fetchJson(
             "https://api.frankerfacez.com/v1/room/" + channelLogin
         ), 110));
-        System.out.printf("Katalog emotek dla #%s: %d kodów.%n", channelLogin, size());
         catalogUpdatedAction.run();
         return sevenTvLoaded && bttvLoaded && ffzLoaded;
     }
@@ -424,10 +423,32 @@ final class EmoteCatalog implements AutoCloseable {
     }
 
     private void add(String code, String imageUrl, String previewImageUrl, boolean animated, int priority) {
-        Emote candidate = new Emote(code, imageUrl, previewImageUrl, animated, priority);
-        emotes.compute(code, (ignored, current) ->
-            current == null || candidate.priority() >= current.priority() ? candidate : current
-        );
+        add(code, imageUrl, previewImageUrl, animated, priority, true);
+    }
+
+    private void add(
+        String code,
+        String imageUrl,
+        String previewImageUrl,
+        boolean animated,
+        int priority,
+        boolean sidebarVisible
+    ) {
+        Emote candidate = new Emote(code, imageUrl, previewImageUrl, animated, priority, sidebarVisible);
+        emotes.compute(code, (ignored, current) -> {
+            if (current == null) return candidate;
+            Emote preferred = candidate.priority() >= current.priority() ? candidate : current;
+            boolean visible = current.sidebarVisible() || candidate.sidebarVisible();
+            if (preferred.sidebarVisible() == visible) return preferred;
+            return new Emote(
+                preferred.code(),
+                preferred.imageUrl(),
+                preferred.previewImageUrl(),
+                preferred.animated(),
+                preferred.priority(),
+                visible
+            );
+        });
     }
 
     private boolean loadCatalogIndex() {
@@ -439,21 +460,25 @@ final class EmoteCatalog implements AutoCloseable {
             for (JsonNode entry : entries) {
                 String code = text(entry, "code");
                 if (code.isBlank()) continue;
+                int priority = entry.path("priority").asInt(0);
                 add(
                     code,
                     text(entry, "imageUrl"),
                     text(entry, "previewImageUrl"),
                     entry.path("animated").asBoolean(false),
-                    entry.path("priority").asInt(0)
+                    priority,
+                    entry.has("sidebarVisible")
+                        ? entry.path("sidebarVisible").asBoolean(true)
+                        : priority != 200
                 );
             }
             long age = System.currentTimeMillis() - root.path("savedAt").asLong(0L);
             return !emotes.isEmpty()
                 && root.path("channelLoaded").asBoolean(false)
                 && age >= 0
-                && age <= CATALOG_INDEX_MAX_AGE_MS;
+                && age <= CATALOG_REFRESH_INTERVAL_MS;
         } catch (Exception exception) {
-            System.err.println("Nie wczytano indeksu emotek: " + exception.getMessage());
+            System.err.println("Could not load the emote index: " + exception.getMessage());
             return false;
         }
     }
@@ -478,6 +503,7 @@ final class EmoteCatalog implements AutoCloseable {
                     entry.put("previewImageUrl", emote.previewImageUrl());
                     entry.put("animated", emote.animated());
                     entry.put("priority", emote.priority());
+                    entry.put("sidebarVisible", emote.sidebarVisible());
                 });
             temporary = Files.createTempFile(imageCacheDirectory, "catalog-", ".tmp");
             json.writeValue(temporary.toFile(), root);
@@ -493,7 +519,7 @@ final class EmoteCatalog implements AutoCloseable {
             }
             temporary = null;
         } catch (Exception exception) {
-            System.err.println("Nie zapisano indeksu emotek: " + exception.getMessage());
+            System.err.println("Could not save the emote index: " + exception.getMessage());
         } finally {
             if (temporary != null) {
                 try {
@@ -525,7 +551,7 @@ final class EmoteCatalog implements AutoCloseable {
             }
             byte[] body = response.body();
             if (body.length == 0 || body.length > 8 * 1024 * 1024) {
-                throw new IllegalStateException("Nieprawidlowy rozmiar obrazu: " + body.length);
+                throw new IllegalStateException("Invalid image size: " + body.length);
             }
             String extension = imageExtension(
                 response.headers().firstValue("Content-Type").orElse(""),
@@ -627,7 +653,7 @@ final class EmoteCatalog implements AutoCloseable {
                 last = exception;
             }
         }
-        throw last == null ? new IllegalStateException("Brak adresu API") : last;
+        throw last == null ? new IllegalStateException("No API URL was provided") : last;
     }
 
     private JsonNode fetchJson(String url) {
@@ -652,7 +678,7 @@ final class EmoteCatalog implements AutoCloseable {
             loader.run();
             return true;
         } catch (RuntimeException exception) {
-            System.err.println("Nie wczytano emotek " + source + ": " + exception.getMessage());
+            System.err.println("Could not load emotes from " + source + ": " + exception.getMessage());
             return false;
         }
     }
@@ -684,7 +710,8 @@ final class EmoteCatalog implements AutoCloseable {
         String imageUrl,
         String previewImageUrl,
         boolean animated,
-        int priority
+        int priority,
+        boolean sidebarVisible
     ) {
     }
 

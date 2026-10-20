@@ -183,10 +183,10 @@ public final class Main {
                         printBotResponse(channel, botUsername, message, 0);
                         onSuccess.run();
                     } else {
-                        System.err.println("Nie wysłano wiadomości z okna czatu.");
+                        System.err.println("The message from the chat window was not sent.");
                     }
                 } catch (RuntimeException exception) {
-                    System.err.println("Nie wysłano wiadomości z okna czatu: " + exception.getMessage());
+                    System.err.println("The message from the chat window was not sent: " + exception.getMessage());
                 }
             }),
             () -> {
@@ -278,12 +278,12 @@ public final class Main {
                 || (authenticatedUsername != null && author.equalsIgnoreCase(authenticatedUsername));
             if (isBotUser) {
                 rememberSentResponse(sentResponses, event.getMessage());
-                return; // Bot nigdy nie odpowiada sam sobie.
+                return; // The bot never replies to itself.
             }
 
             String normalizedAuthor = author.toLowerCase(Locale.ROOT);
-            // Odpowiedzi Twitch należą wyłącznie do okna wątków.
-            // Nie uruchamiają powitań, liczników fraz ani automatycznych odpowiedzi.
+            // Twitch replies belong exclusively in the thread window.
+            // They do not trigger greetings, phrase counters, or automatic responses.
             if (event.getReplyInfo() != null) {
                 return;
             }
@@ -338,7 +338,7 @@ public final class Main {
                     break;
                 }
 
-                // Pasująca wiadomość może zostać losowo pominięta, żeby bot nie powtarzał każdej emotki.
+                // A matching message can be skipped randomly so the bot does not repeat every emote.
                 if (ThreadLocalRandom.current().nextDouble() >= currentResponseSettings.chance()
                     || !pendingResponses.compareAndSet(0, 1)) {
                     break;
@@ -363,13 +363,13 @@ public final class Main {
                             printBotResponse(channel, botUsername, response, scheduledDelay);
                             threadViewer.showSentMessage("Chatbox Spammer", response);
                         } else {
-                            System.err.println("Nie wysłano wiadomości Chatbox Spammera na Twitchu.");
+                            System.err.println("The Chatbox Spammer message was not sent to Twitch.");
                         }
                     } finally {
                         pendingResponses.decrementAndGet();
                     }
                 }, scheduledDelay, TimeUnit.MILLISECONDS);
-                break; // Maksymalnie jedna odpowiedź na jedną wiadomość.
+                break; // At most one response per message.
             }
             });
         });
@@ -379,13 +379,13 @@ public final class Main {
             if (!resourcesClosed.compareAndSet(false, true)) {
                 return;
             }
-            System.out.println("\nZamykanie bota...");
+            System.out.println("\nShutting down the bot...");
             try {
                 rulesWatcher.close();
                 configWatcher.close();
                 greetingWatcher.close();
             } catch (IOException ignored) {
-                // Program i tak jest zamykany.
+                // The program is shutting down anyway.
             }
             responseExecutor.shutdownNow();
             chattersExecutor.shutdownNow();
@@ -400,49 +400,14 @@ public final class Main {
         client.getChat().joinChannel(channel);
         threadViewer.showWindow();
         threadViewer.setConnected();
-        ResponseSettings startupResponseSettings = responseSettings.get();
-        GreetingSettings startupGreetingSettings = greetingSettings.get();
-        System.out.printf(
-            "Chatbox Spammer działa na kanale #%s. Wczytano wyzwalaczy: %d.%n",
-            channel,
-            rules.get().size()
-        );
-        System.out.printf(
-            "Chatbox Spammer: %.0f%% szansy, opoznienie %d-%d ms, wspolny odstep %d-%d ms, "
-                + "ta sama odpowiedz po %d ms.%n",
-            startupResponseSettings.chance() * 100,
-            startupResponseSettings.minimumDelayMs(),
-            startupResponseSettings.maximumDelayMs(),
-            startupResponseSettings.minimumIntervalMs(),
-            startupResponseSettings.maximumIntervalMs(),
-            startupResponseSettings.sameResponseCooldownMs()
-        );
-        System.out.println(
-            "Zmiany Chatbox Spammera w " + rulesPath.getFileName()
-                + " oraz zmiany config.properties i greetings.properties są wczytywane automatycznie."
-        );
-        System.out.printf(
-            "Powitania: wyłączone; sterowanie w oknie Qt; tryb %s; zapamiętanych osób: %d.%n",
-            startupGreetingSettings.mode(),
-            greetedUsers.size()
-        );
-        System.out.printf(
-            "Greetings: opoznienie %d-%d ms, wspolny odstep automatycznych wiadomosci %d-%d ms; "
-                + "po wyslaniu login jest zapisywany.%n",
-            startupResponseSettings.minimumDelayMs(),
-            startupResponseSettings.maximumDelayMs(),
-            startupResponseSettings.minimumIntervalMs(),
-            startupResponseSettings.maximumIntervalMs()
-        );
-        System.out.println("Okno Qt pokazuje pełny czat, obserwowanych i wątki odpowiedzi.");
-        System.out.println("Sterowanie powitaniami i pożegnaniami znajduje się w oknie Qt.");
+        System.out.printf("Ready: #%s, %d Chatbox Spammer rules.%n", channel, rules.get().size());
         int exitCode = QApplication.exec();
         threadViewer.close();
         closeResources.run();
         try {
             Runtime.getRuntime().removeShutdownHook(shutdownHook);
         } catch (IllegalStateException ignored) {
-            // JVM rozpoczęła już zamykanie.
+            // The JVM has already started shutting down.
         }
         QApplication.shutdown();
         if (exitCode != 0) {
@@ -487,7 +452,7 @@ public final class Main {
             } catch (InterruptedException exception) {
                 Thread.currentThread().interrupt();
             } catch (ClosedWatchServiceException ignored) {
-                // Normalne zamknięcie programu.
+                // Normal program shutdown.
             }
         }, "chatbox-spammer-file-watcher");
         thread.setDaemon(true);
@@ -530,7 +495,7 @@ public final class Main {
             } catch (InterruptedException exception) {
                 Thread.currentThread().interrupt();
             } catch (ClosedWatchServiceException ignored) {
-                // Normalne zamknięcie programu.
+                // Normal program shutdown.
             }
         }, threadName);
         thread.setDaemon(true);
@@ -587,7 +552,7 @@ public final class Main {
             chatters.sort(String.CASE_INSENSITIVE_ORDER);
             threadViewer.showChatters(chatters, total > 0 ? total : chatters.size());
         } catch (RuntimeException exception) {
-            System.err.println("Nie pobrano listy uzytkownikow czatu z Twitch Helix: " + exception.getMessage());
+            System.err.println("Could not retrieve the chatter list from Twitch Helix: " + exception.getMessage());
             threadViewer.showChattersStatus(
                 "Unavailable: moderator role and moderator:read:chatters are required"
             );
@@ -618,10 +583,10 @@ public final class Main {
             ownMentionPattern.set(buildOwnMentionPattern(botUsername, updatedMentionAliases));
             threadViewer.refreshChatView();
             System.out.printf(
-                "Przeładowano Chatbox Spammer/Greetings: %.0f%%, opóźnienie %d-%d ms, "
-                    + "wspólny odstęp %d-%d ms; filtry: emotki=%s, chiński=%s, japoński=%s, "
-                    + "koreański=%s, łaciński=%s, teksty=%d, min=%d zn.; wątki=%s; "
-                    + "czat: %d pt, odstęp %d px.%n",
+                "Reloaded Chatbox Spammer/Greetings: %.0f%%, delay %d-%d ms, "
+                    + "shared interval %d-%d ms; filters: emotes=%s, Chinese=%s, Japanese=%s, "
+                    + "Korean=%s, Latin=%s, text fragments=%d, minimum=%d characters; threads=%s; "
+                    + "chat: %d pt, spacing %d px.%n",
                 updated.chance() * 100,
                 updated.minimumDelayMs(),
                 updated.maximumDelayMs(),
@@ -640,8 +605,8 @@ public final class Main {
             );
         } catch (Exception exception) {
             System.err.println(
-                "Nie przeładowano config.properties: " + exception.getMessage()
-                    + ". Nadal działa ostatnia poprawna konfiguracja."
+                "Could not reload config.properties: " + exception.getMessage()
+                    + ". The last valid configuration remains active."
             );
         }
     }
@@ -676,7 +641,7 @@ public final class Main {
             .strip()
             .toLowerCase(Locale.ROOT);
         if (!threadAutoOpenMode.equals("watched") && !threadAutoOpenMode.equals("all")) {
-            throw new IllegalArgumentException("thread.auto.open musi mieć wartość watched albo all.");
+            throw new IllegalArgumentException("thread.auto.open must be either watched or all.");
         }
         List<String> hiddenTexts = commaSeparatedSetting(config, "chat.filter.contains").stream()
             .map(value -> value.toLowerCase(Locale.ROOT))
@@ -685,13 +650,13 @@ public final class Main {
         int lineSpacing = Math.toIntExact(integerSetting(config, "chat.line.spacing", 2));
         int minimumMessageLength = Math.toIntExact(integerSetting(config, "chat.filter.min.length", 0));
         if (fontPointSize < 8 || fontPointSize > 24) {
-            throw new IllegalArgumentException("chat.font.size musi być liczbą od 8 do 24.");
+            throw new IllegalArgumentException("chat.font.size must be a number from 8 to 24.");
         }
         if (lineSpacing < 0 || lineSpacing > 20) {
-            throw new IllegalArgumentException("chat.line.spacing musi być liczbą od 0 do 20.");
+            throw new IllegalArgumentException("chat.line.spacing must be a number from 0 to 20.");
         }
         if (minimumMessageLength < 0 || minimumMessageLength > 100) {
-            throw new IllegalArgumentException("chat.filter.min.length musi być liczbą od 0 do 100.");
+            throw new IllegalArgumentException("chat.filter.min.length must be a number from 0 to 100.");
         }
         return new ThreadViewer.ChatViewSettings(
             removeEmoteOnly,
@@ -750,7 +715,7 @@ public final class Main {
             return Character.UnicodeScript.forName(value.replace('-', '_'));
         } catch (IllegalArgumentException exception) {
             throw new IllegalArgumentException(
-                "Nieznany kod języka lub alfabet w chat.filter.languages: " + value
+                "Unknown language code or writing system in chat.filter.languages: " + value
             );
         }
     }
@@ -805,7 +770,7 @@ public final class Main {
             // Clearing here created a short race in which another message could schedule a duplicate greeting.
             greetedUsers.addAll(updated.greetedUsers());
             System.out.printf(
-                "Przeładowano ustawienia osób: komenda %s, tryb %s, powitań %d, pożegnań %d, dozwolonych %d.%n",
+                "Reloaded user settings: command %s, mode %s, greetings %d, goodbyes %d, allowed users %d.%n",
                 updated.toggleCommand(),
                 updated.mode(),
                 updated.messages().size(),
@@ -814,8 +779,8 @@ public final class Main {
             );
         } catch (Exception exception) {
             System.err.println(
-                "Nie przeładowano greetings.properties: " + exception.getMessage()
-                    + ". Nadal działa ostatnia poprawna konfiguracja."
+                "Could not reload greetings.properties: " + exception.getMessage()
+                    + ". The last valid configuration remains active."
             );
         }
     }
@@ -891,7 +856,7 @@ public final class Main {
         Consumer<String> onSent
     ) {
         if (farewellMessages.isEmpty()) {
-            System.err.println("Brak zdefiniowanych tekstow pozegnan w farewell.messages.");
+            System.err.println("No goodbye messages are defined in farewell.messages.");
             afterFarewell.accept(false);
             return "No farewell messages are defined in farewell.messages.";
         }
@@ -909,12 +874,12 @@ public final class Main {
             .sorted(String.CASE_INSENSITIVE_ORDER)
             .toList();
         if (users.isEmpty()) {
-            System.out.println("Brak osob zapisanych jako greeted.user.*.");
+            System.out.println("No users are stored as greeted.user.*.");
             afterFarewell.accept(true);
             return "No users to say goodbye to.";
         }
         if (!farewellInProgress.compareAndSet(false, true)) {
-            System.out.println("Pozegnanie jest juz w trakcie wysylania.");
+            System.out.println("Goodbye messages are already being sent.");
             afterFarewell.accept(false);
             return "Farewell messages are already being sent.";
         }
@@ -928,7 +893,7 @@ public final class Main {
         AtomicInteger pendingBatches = new AtomicInteger(batchCount);
         AtomicBoolean allBatchesSent = new AtomicBoolean(true);
         System.out.printf(
-            "Zaplanowano pozegnanie %d osob w %d wiadomosciach (maksymalnie %d osob na wiadomosc).%n",
+            "Scheduled goodbye for %d users in %d messages (up to %d users per message).%n",
             users.size(),
             batchCount,
             FAREWELL_BATCH_SIZE
@@ -973,11 +938,11 @@ public final class Main {
                             removeGreetedUsers(greetingConfigPath, Set.copyOf(batchUsers));
                         } else {
                             allBatchesSent.set(false);
-                            System.err.println("Nie wyslano wiadomosci pozegnalnej na Twitchu.");
+                            System.err.println("The goodbye message was not sent to Twitch.");
                         }
                     } catch (RuntimeException exception) {
                         allBatchesSent.set(false);
-                        System.err.println("Nie wyslano wiadomosci pozegnalnej: " + exception.getMessage());
+                        System.err.println("The goodbye message was not sent: " + exception.getMessage());
                     } finally {
                         if (pendingBatches.decrementAndGet() == 0) {
                             farewellInProgress.set(false);
@@ -991,7 +956,7 @@ public final class Main {
                     farewellInProgress.set(false);
                     afterFarewell.accept(false);
                 }
-                System.err.println("Nie zaplanowano wiadomosci pozegnalnej: " + exception.getMessage());
+                System.err.println("Could not schedule the goodbye message: " + exception.getMessage());
             }
         }
         return "Scheduled farewell for " + users.size() + " users in " + batchCount + " messages.";
@@ -1026,7 +991,7 @@ public final class Main {
                 Files.deleteIfExists(temporary);
             }
         } catch (IOException exception) {
-            System.err.println("Nie usunięto pożegnanych osób z " + path + ": " + exception.getMessage());
+            System.err.println("Could not remove users who received a goodbye from " + path + ": " + exception.getMessage());
         }
     }
 
@@ -1035,15 +1000,15 @@ public final class Main {
             List<Rule> updatedRules = loadRules(rulesPath);
             rules.set(updatedRules);
             System.out.printf(
-                "Przeładowano Chatbox Spammer (%s). Liczba wyzwalaczy: %d.%n",
+                "Reloaded Chatbox Spammer (%s). Trigger count: %d.%n",
                 rulesPath.getFileName(),
                 updatedRules.size()
             );
         } catch (Exception exception) {
             System.err.println(
-                "Nie udało się przeładować Chatbox Spammera (" + rulesPath.getFileName() + "): "
+                "Could not reload Chatbox Spammer (" + rulesPath.getFileName() + "): "
                     + exception.getMessage()
-                    + ". Nadal działa ostatnia poprawna wersja."
+                    + ". The last valid version remains active."
             );
         }
     }
@@ -1096,7 +1061,7 @@ public final class Main {
         String response,
         long delayMs
     ) {
-        String delay = delayMs > 0 ? " (opoznienie " + delayMs + " ms)" : "";
+        String delay = delayMs > 0 ? " (delay " + delayMs + " ms)" : "";
         System.out.printf(
             "%s[%s] %s: %s%s%s%n",
             BOT_RESPONSE_STYLE,
@@ -1125,7 +1090,7 @@ public final class Main {
     ) {
         if (greetingMessages.isEmpty()) {
             pendingGreetings.remove(normalizedAuthor);
-            System.err.println("Brak zdefiniowanych tekstów powitań.");
+            System.err.println("No greeting messages are defined.");
             return;
         }
 
@@ -1187,7 +1152,7 @@ public final class Main {
                 Files.deleteIfExists(temporary);
             }
         } catch (IOException exception) {
-            System.err.println("Nie zapisano użytkownika w " + path + ": " + exception.getMessage());
+            System.err.println("Could not save the user to " + path + ": " + exception.getMessage());
         }
     }
 
@@ -1200,20 +1165,20 @@ public final class Main {
         long sameResponseCooldownMs = integerSetting(config, "response.same.cooldown.ms", 20000);
 
         if (chance < 0 || chance > 1) {
-            throw new IllegalArgumentException("response.chance musi być liczbą od 0 do 1.");
+            throw new IllegalArgumentException("response.chance must be a number from 0 to 1.");
         }
         if (minimumDelayMs < 0 || maximumDelayMs < minimumDelayMs) {
             throw new IllegalArgumentException(
-                "Opóźnienie musi być dodatnie, a response.delay.max.ms nie może być mniejsze od minimum."
+                "The delay must be non-negative, and response.delay.max.ms cannot be lower than the minimum."
             );
         }
         if (minimumIntervalMs < 0 || maximumIntervalMs < minimumIntervalMs) {
             throw new IllegalArgumentException(
-                "Odstęp musi być dodatni, a response.interval.max.ms nie może być mniejsze od minimum."
+                "The interval must be non-negative, and response.interval.max.ms cannot be lower than the minimum."
             );
         }
         if (sameResponseCooldownMs < 0) {
-            throw new IllegalArgumentException("response.same.cooldown.ms nie może być ujemne.");
+            throw new IllegalArgumentException("response.same.cooldown.ms cannot be negative.");
         }
         return new ResponseSettings(
             chance,
@@ -1230,7 +1195,7 @@ public final class Main {
         try {
             return value == null || value.isBlank() ? defaultValue : Double.parseDouble(value.strip());
         } catch (NumberFormatException exception) {
-            throw new IllegalArgumentException("Ustawienie " + name + " musi być liczbą.");
+            throw new IllegalArgumentException("Setting " + name + " must be a number.");
         }
     }
 
@@ -1239,7 +1204,7 @@ public final class Main {
         try {
             return value == null || value.isBlank() ? defaultValue : Long.parseLong(value.strip());
         } catch (NumberFormatException exception) {
-            throw new IllegalArgumentException("Ustawienie " + name + " musi być liczbą całkowitą.");
+            throw new IllegalArgumentException("Setting " + name + " must be an integer.");
         }
     }
 
@@ -1247,12 +1212,12 @@ public final class Main {
         String value = config.getProperty(name, defaultValue ? "on" : "off").strip().toLowerCase(Locale.ROOT);
         if (value.equals("on")) return true;
         if (value.equals("off")) return false;
-        throw new IllegalArgumentException("Ustawienie " + name + " musi miec wartosc on albo off.");
+        throw new IllegalArgumentException("Setting " + name + " must be either on or off.");
     }
 
     private static List<Rule> loadRules(Path path) throws IOException {
         if (!Files.isRegularFile(path)) {
-            throw new IllegalArgumentException("Nie znaleziono pliku reguł: " + path.toAbsolutePath());
+            throw new IllegalArgumentException("Rules file not found: " + path.toAbsolutePath());
         }
 
         List<Rule> rules = new ArrayList<>();
@@ -1267,7 +1232,7 @@ public final class Main {
             int separator = line.indexOf('=');
             if (separator < 1 || separator == line.length() - 1) {
                 throw new IllegalArgumentException(
-                    "Błędna reguła w linii " + lineNumber + ". Użyj formatu: słowo=odpowiedź"
+                    "Invalid rule on line " + lineNumber + ". Use the format: word=response"
                 );
             }
 
@@ -1278,8 +1243,8 @@ public final class Main {
                 String response = variant.strip();
                 if (response.isEmpty()) {
                     throw new IllegalArgumentException(
-                        "Pusta odpowiedź w linii " + lineNumber
-                            + ". Rozdziel warianty jako: odpowiedź1|odpowiedź2"
+                        "Empty response on line " + lineNumber
+                            + ". Separate variants as: response1|response2"
                     );
                 }
                 responses.add(response);
@@ -1291,13 +1256,13 @@ public final class Main {
             Matcher advanced = ADVANCED_RULE_PREFIX.matcher(triggerDefinition);
             String trigger = triggerDefinition;
             if (advanced.matches()) {
-                minimumOccurrences = parsePositiveInteger(advanced.group(1), lineNumber, "liczba wystąpień");
-                occurrenceWindowMs = parsePositiveLong(advanced.group(2), lineNumber, "okno czasu");
-                maximumRepetitions = parsePositiveInteger(advanced.group(3), lineNumber, "liczba powtórzeń");
+                minimumOccurrences = parsePositiveInteger(advanced.group(1), lineNumber, "occurrence count");
+                occurrenceWindowMs = parsePositiveLong(advanced.group(2), lineNumber, "time window");
+                maximumRepetitions = parsePositiveInteger(advanced.group(3), lineNumber, "repetition count");
                 trigger = advanced.group(4).strip();
             }
             if (trigger.isEmpty()) {
-                throw new IllegalArgumentException("Brak frazy wyzwalającej w linii " + lineNumber + ".");
+                throw new IllegalArgumentException("Missing trigger phrase on line " + lineNumber + ".");
             }
             rules.add(new Rule(
                 trigger,
@@ -1309,7 +1274,7 @@ public final class Main {
         }
 
         if (rules.isEmpty()) {
-            throw new IllegalArgumentException("Plik " + path.toAbsolutePath() + " nie zawiera żadnych reguł.");
+            throw new IllegalArgumentException("File " + path.toAbsolutePath() + " contains no rules.");
         }
         return List.copyOf(rules);
     }
@@ -1323,7 +1288,7 @@ public final class Main {
             return result;
         } catch (NumberFormatException exception) {
             throw new IllegalArgumentException(
-                "Nieprawidłowa " + description + " w linii " + lineNumber + ". Wymagana liczba większa od zera."
+                "Invalid " + description + " on line " + lineNumber + ". A number greater than zero is required."
             );
         }
     }
@@ -1337,7 +1302,7 @@ public final class Main {
             return result;
         } catch (NumberFormatException exception) {
             throw new IllegalArgumentException(
-                "Nieprawidłowe " + description + " w linii " + lineNumber + ". Wymagana liczba większa od zera."
+                "Invalid " + description + " on line " + lineNumber + ". A number greater than zero is required."
             );
         }
     }
@@ -1405,7 +1370,6 @@ public final class Main {
             try (Reader reader = Files.newBufferedReader(path, StandardCharsets.UTF_8)) {
                 config.load(reader);
             }
-            System.out.println("Wczytano ustawienia z " + path.toAbsolutePath());
         }
         return config;
     }
@@ -1414,24 +1378,24 @@ public final class Main {
         Properties greetingConfig = loadConfig(path);
         String toggleCommand = greetingConfig.getProperty("toggle.command", "hi").strip();
         if (toggleCommand.isEmpty()) {
-            throw new IllegalArgumentException("toggle.command nie może być puste.");
+            throw new IllegalArgumentException("toggle.command cannot be empty.");
         }
 
         String mode = greetingConfig.getProperty("mode", "all").strip().toLowerCase(Locale.ROOT);
         if (!mode.equals("all") && !mode.equals("defined")) {
-            throw new IllegalArgumentException("mode musi mieć wartość all albo defined.");
+            throw new IllegalArgumentException("mode must be either all or defined.");
         }
 
         List<String> messages = new ArrayList<>(loadMultilineSection(path, "messages"));
         messages.addAll(propertyValues(greetingConfig, "message."));
         if (messages.isEmpty()) {
-            throw new IllegalArgumentException("Brak tekstów pod sekcją messages=.");
+            throw new IllegalArgumentException("No messages are defined under messages=.");
         }
 
         List<String> farewellMessages = new ArrayList<>(loadMultilineSection(path, "farewell.messages"));
         farewellMessages.addAll(propertyValues(greetingConfig, "farewell.message."));
         if (farewellMessages.isEmpty()) {
-            throw new IllegalArgumentException("Brak tekstów pod sekcją farewell.messages=.");
+            throw new IllegalArgumentException("No messages are defined under farewell.messages=.");
         }
 
         Set<String> allowedUsers = new HashSet<>();
@@ -1466,7 +1430,7 @@ public final class Main {
         }
         if (value == null || value.isBlank()) {
             throw new IllegalArgumentException(
-                "Brak ustawienia " + environmentName + " / " + propertyName + ". Zobacz README.md."
+                "Missing setting " + environmentName + " / " + propertyName + ". See README.md."
             );
         }
         return value.strip();
@@ -1488,7 +1452,7 @@ public final class Main {
 
         if (!channel.matches("[a-z0-9_]+")) {
             throw new IllegalArgumentException(
-                "Nieprawidłowy kanał Twitch: " + value + ". Podaj np. jinnytty albo https://www.twitch.tv/jinnytty"
+                "Invalid Twitch channel: " + value + ". Enter a name such as jinnytty or https://www.twitch.tv/jinnytty"
             );
         }
         return channel;

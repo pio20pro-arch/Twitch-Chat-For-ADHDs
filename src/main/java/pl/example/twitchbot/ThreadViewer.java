@@ -1666,32 +1666,20 @@ final class ThreadViewer implements AutoCloseable {
         );
     }
 
-    private QTextDocument createMessageDocument(String message, QFont font, int width) {
-        return createMessageDocument(message, font, width, 0);
-    }
-
-    private QTextDocument createMessageDocument(String message, QFont font, int width, int firstLineIndent) {
+    private QTextDocument createMessageDocument(ChatLine line, QFont font, int width, QColor authorColor) {
         QTextDocument document = new QTextDocument();
         document.setDefaultFont(font);
         document.setDocumentMargin(0);
         document.setTextWidth(Math.max(1, width));
         QTextCursor cursor = new QTextCursor(document);
-        if (firstLineIndent > 0) {
-            QTextBlockFormat blockFormat = cursor.blockFormat();
-            QFontMetrics metrics = new QFontMetrics(font);
-            int prefixWidth = metrics.horizontalAdvance(" ");
-            metrics.dispose();
-            // The nickname and colon are painted together by the delegate. The document
-            // starts with only the separating space; wrapped lines start under the message.
-            blockFormat.setLeftMargin(firstLineIndent + prefixWidth);
-            blockFormat.setTextIndent(-prefixWidth);
-            cursor.setBlockFormat(blockFormat);
-            blockFormat.dispose();
-        }
         QTextCharFormat normal = new QTextCharFormat();
         normal.setForeground(new QColor("#e4e9f0"));
+        QTextCharFormat authorFormat = new QTextCharFormat(normal);
+        authorFormat.setForeground(authorColor);
+        String author = line.author() == null ? "?" : line.author();
+        cursor.insertText(author + ":", authorFormat);
         cursor.insertText(" ", normal);
-        insertMessageWithEmotes(cursor, message == null ? "" : message, normal);
+        insertMessageWithEmotes(cursor, line.message() == null ? "" : line.message(), normal);
         return document;
     }
 
@@ -1729,6 +1717,12 @@ final class ThreadViewer implements AutoCloseable {
         cursor.document().addResource(QTextDocument.ResourceType.ImageResource.value(), resourceName, pixmap);
         QTextImageFormat imageFormat = new QTextImageFormat();
         imageFormat.setName(resourceName);
+        int sourceHeight = Math.max(1, pixmap.height());
+        int displayWidth = Math.max(1, (int) Math.round(
+            pixmap.width() * (double) emoteIconSize / sourceHeight
+        ));
+        imageFormat.setWidth(displayWidth);
+        imageFormat.setHeight(emoteIconSize);
         imageFormat.setVerticalAlignment(QTextCharFormat.VerticalAlignment.AlignMiddle);
         cursor.insertImage(imageFormat);
         imageFormat.dispose();
@@ -2194,10 +2188,8 @@ final class ThreadViewer implements AutoCloseable {
             String nicknameLabel = nickname + ":";
             int nicknameWidth = metrics.horizontalAdvance(nicknameLabel);
             int contentWidth = messageWidth(option.rect().width());
-            CachedMessageDocument cached = documentFor(item, line, option.font(), contentWidth, nicknameWidth);
+            CachedMessageDocument cached = documentFor(item, line, option.font(), contentWidth);
             FirstLineGeometry firstLine = firstLineGeometry(cached.document(), metrics);
-            int centeredTextTop = Math.max(0, (firstLine.height() - metrics.height()) / 2);
-            int baseline = option.rect().y() + 1 + centeredTextTop + metrics.ascent();
             painter.fillRect(
                 option.rect(),
                 item.isSelected() ? new QColor("#344057") : cached.rowBackgroundColor()
@@ -2226,8 +2218,6 @@ final class ThreadViewer implements AutoCloseable {
                 borderPen.dispose();
                 borderColor.dispose();
             }
-            painter.setPen(cached.nicknameColor());
-            painter.drawText(x, baseline, nicknameLabel);
             painter.translate(x, option.rect().y() + 1);
             cached.document().drawContents(painter);
             painter.restore();
@@ -2240,15 +2230,8 @@ final class ThreadViewer implements AutoCloseable {
             if (line == null) return super.sizeHint(option, index);
 
             QFontMetrics metrics = new QFontMetrics(option.font());
-            String nickname = line.author() == null ? "?" : line.author();
             int contentWidth = messageWidth(list.viewport().width());
-            QTextDocument document = documentFor(
-                item,
-                line,
-                option.font(),
-                contentWidth,
-                metrics.horizontalAdvance(nickname + ":")
-            ).document();
+            QTextDocument document = documentFor(item, line, option.font(), contentWidth).document();
             int documentHeight = (int) Math.ceil(document.size().height());
             return new QSize(list.viewport().width(), Math.max(metrics.lineSpacing(), documentHeight) + 2);
         }
@@ -2276,17 +2259,16 @@ final class ThreadViewer implements AutoCloseable {
             QListWidgetItem item,
             ChatLine line,
             QFont font,
-            int width,
-            int firstLineIndent
+            int width
         ) {
             CachedMessageDocument cached = documentCache.get(item);
             if (cached != null && cached.width() == width) return cached;
             if (cached != null) cached.document().dispose();
+            QColor authorColor = nicknameColor(line);
             CachedMessageDocument replacement = new CachedMessageDocument(
                 width,
-                createMessageDocument(line.message(), font, width, firstLineIndent),
+                createMessageDocument(line, font, width, authorColor),
                 emoteCodesIn(line.message()),
-                nicknameColor(line),
                 messageBackgroundColor(line),
                 line.watched()
                     ? new QColor("#183029")
@@ -2335,7 +2317,6 @@ final class ThreadViewer implements AutoCloseable {
         int width,
         QTextDocument document,
         Set<String> emoteCodes,
-        QColor nicknameColor,
         QColor messageBackgroundColor,
         QColor rowBackgroundColor
     ) {}
@@ -2446,7 +2427,6 @@ final class ThreadViewer implements AutoCloseable {
 
         private String emoteAtListPosition(QListWidgetItem item, ChatLine line, QPoint position) {
             var itemRect = visualItemRect(item);
-            QFontMetrics metrics = new QFontMetrics(font());
             try {
                 String nickname = line.author() == null ? "?" : line.author();
                 int documentX = position.x() - itemRect.x() - 5;
@@ -2455,10 +2435,10 @@ final class ThreadViewer implements AutoCloseable {
 
                 int messageWidth = Math.max(1, itemRect.width() - 6);
                 QTextDocument document = createMessageDocument(
-                    line.message(),
+                    line,
                     font(),
                     messageWidth,
-                    metrics.horizontalAdvance(nickname + ":")
+                    nicknameColor(line)
                 );
                 QPoint documentPosition = new QPoint(documentX, documentY);
                 try {
@@ -2468,14 +2448,13 @@ final class ThreadViewer implements AutoCloseable {
                     );
                     String imageEmote = emoteImageAt(document, hit);
                     if (imageEmote != null) return imageEmote;
-                    // The list document contains one separating space before the message.
-                    return exactEmoteAt(line.message(), hit - 1);
+                    int messageOffset = nickname.length() + 2;
+                    return exactEmoteAt(line.message(), hit - messageOffset);
                 } finally {
                     documentPosition.dispose();
                     document.dispose();
                 }
             } finally {
-                metrics.dispose();
                 itemRect.dispose();
             }
         }

@@ -38,7 +38,7 @@ final class BilingualSpellChecker implements AutoCloseable {
             try {
                 resultConsumer.accept(check(text));
             } catch (RuntimeException | IOException exception) {
-                System.err.println("Nie sprawdzono pisowni lub gramatyki: " + exception.getMessage());
+                System.err.println("Spelling or grammar check failed: " + exception.getMessage());
                 resultConsumer.accept(List.of());
             }
         });
