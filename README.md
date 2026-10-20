@@ -1,6 +1,7 @@
 # Twitch Chat for ADHDs
 
 This program shows one Twitch channel in a separate, lightweight window. It helps users stay focused on reading and offers a wide range of customizable features.
+Created as proof of concept. It is not perfect but good enouth to play with
 
 <img width=40% height=40% alt="image" src="https://github.com/user-attachments/assets/47084054-1a75-431b-b881-7eb659de1ae0" />
 
