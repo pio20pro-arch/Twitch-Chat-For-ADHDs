@@ -1,0 +1,92 @@
+plugins {
+    id 'application'
+}
+
+repositories {
+    mavenCentral()
+}
+
+def languageToolVersion = '6.6'
+def supportedLanguageToolModules = [
+    'ar', 'ast', 'be', 'br', 'ca', 'crh', 'da', 'de', 'el', 'en', 'eo',
+    'es', 'fa', 'fr', 'ga', 'gl', 'is', 'it', 'ja', 'km', 'lt', 'ml',
+    'nl', 'pl', 'pt', 'ro', 'ru', 'sk', 'sl', 'sv', 'ta', 'tl', 'uk', 'zh'
+] as Set
+def spellcheckLanguageCodes = ['en-US', 'pl-PL']
+def grammarLanguageCodes = ['ja', 'zh']
+def mainConfig = file('config.properties')
+if (mainConfig.isFile()) {
+    def properties = new Properties()
+    mainConfig.withInputStream { stream -> properties.load(stream) }
+    spellcheckLanguageCodes = properties.getProperty('spellcheck.languages', 'en-US,pl-PL').split('[,;]')
+        .collect { it.trim() }
+        .findAll { !it.isEmpty() }
+    grammarLanguageCodes = properties.getProperty('grammar.languages', 'ja,zh').split('[,;]')
+        .collect { it.trim() }
+        .findAll { !it.isEmpty() }
+}
+def languageToolModulesFor = { languageCodes, settingName ->
+    def modules = languageCodes.collect { languageCode ->
+        def normalized = languageCode.toLowerCase(Locale.ROOT)
+        if (!(normalized ==~ /[a-z]{2,3}([_-][a-z0-9]+)*/)) {
+            throw new GradleException(
+                "Invalid ${settingName} language code '${languageCode}'. Use codes such as en-US, pl-PL, ja or zh."
+            )
+        }
+        normalized.split('[-_]')[0]
+    }.unique()
+    def unsupportedModules = modules.findAll { !supportedLanguageToolModules.contains(it) }
+    if (!unsupportedModules.isEmpty()) {
+        throw new GradleException(
+            "Unsupported ${settingName} language module(s): ${unsupportedModules.join(', ')}. " +
+            "Supported module codes: ${supportedLanguageToolModules.sort().join(', ')}."
+        )
+    }
+    modules
+}
+def languageToolModules = (
+    languageToolModulesFor(spellcheckLanguageCodes, 'spellcheck.languages')
+        + languageToolModulesFor(grammarLanguageCodes, 'grammar.languages')
+).unique()
+
+dependencies {
+    implementation 'com.github.twitch4j:twitch4j:1.27.0'
+    implementation 'io.qtjambi:qtjambi:6.12.0'
+    implementation "org.languagetool:languagetool-core:${languageToolVersion}"
+    languageToolModules.each { languageModule ->
+        implementation "org.languagetool:language-${languageModule}:${languageToolVersion}"
+    }
+    runtimeOnly 'io.qtjambi:qtjambi-native-windows-x64:6.12.0'
+    runtimeOnly 'ch.qos.logback:logback-classic:1.5.18'
+}
+
+application {
+    mainClass = 'pl.example.twitchbot.Main'
+    applicationDefaultJvmArgs = [
+        '-Xms64m',
+        '-Xmx512m',
+        '--enable-native-access=ALL-UNNAMED',
+        '-Dfile.encoding=UTF-8',
+        '-Dstdout.encoding=UTF-8',
+        '-Dstderr.encoding=UTF-8'
+    ]
+
+    // Twitch4J 1.27 uÅ¼ywa Caffeine 2.9.3. Na Javie 24+ biblioteka dziaÅ‚a,
+    // ale JVM domyÅ›lnie pokazuje ostrzeÅ¼enie o sun.misc.Unsafe.
+    if (JavaVersion.current().majorVersion.toInteger() >= 24) {
+        applicationDefaultJvmArgs += '--sun-misc-unsafe-memory-access=allow'
+    }
+}
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+}
+
+tasks.named('run') {
+    standardInput = System.in
+}
