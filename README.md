@@ -343,7 +343,7 @@ Messages from excluded users are hidden from Full Chat. These users receive no a
 If people shorten or misspell your nickname, add those forms separated by commas or semicolons:
 
 ```properties
-bot.mention.aliases=Javor;Javorek;JavorB
+bot.mention.aliases=Bird,Birdy
 ```
 
 The application always recognizes the full `bot.username` as well. Alias matching ignores case but requires a complete word. A recognized message gets a white border and can automatically open a protected thread.
