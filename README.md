@@ -1,7 +1,7 @@
 # Twitch Chat for ADHDs
 
 This program shows one Twitch channel in a separate, lightweight window. It helps you follow important users and replies, send messages, use emotes, and optionally automate greetings and simple responses.
-<img width=25% height=25% alt="image" src="https://github.com/user-attachments/assets/47084054-1a75-431b-b881-7eb659de1ae0" />
+<img width=40% height=40% alt="image" src="https://github.com/user-attachments/assets/47084054-1a75-431b-b881-7eb659de1ae0" />
 
 ## How to start the application
 
