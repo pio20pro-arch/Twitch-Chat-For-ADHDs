@@ -522,7 +522,7 @@ A restart is required after changing connection details, moderator mode, the emo
 - The `↑` and `↓` history remembers 100 manually sent messages.
 - Chat messages are not saved to disk as a chat archive.
 - Logs, configuration, and the emote cache remain on disk.
-- Receiving, filtering, spell checking, emote downloading, and sending work outside the main window event handling so a busy chat interferes with typing as little as possible.
+- Receiving, filtering, spell checking, emote downloading, works in threads so app is very fast.
 - Only one copy may run for the same account and channel pair.
 
 ## Troubleshooting
