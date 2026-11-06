@@ -20,6 +20,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.function.IntConsumer;
 import java.util.function.Supplier;
@@ -145,6 +146,7 @@ final class ThreadViewer implements AutoCloseable {
     private final ConcurrentLinkedQueue<Runnable> pendingUiTasks = new ConcurrentLinkedQueue<>();
     private final AtomicInteger pendingChatLineCount = new AtomicInteger();
     private final AtomicInteger pendingUiTaskCount = new AtomicInteger();
+    private final AtomicReference<String> chatSearchQuery = new AtomicReference<>("");
     private final IdentityHashMap<QListWidgetItem, ChatLine> chatItemLines = new IdentityHashMap<>();
     private final IdentityHashMap<ChatLine, QListWidgetItem> chatLineItems = new IdentityHashMap<>();
     private final IdentityHashMap<QListWidgetItem, ChatLine> watchedItemLines = new IdentityHashMap<>();
@@ -182,6 +184,7 @@ final class ThreadViewer implements AutoCloseable {
     private int emotePickerGeneration;
     private int emotePopupGeneration;
     private boolean emoteAnimationRefreshScheduled;
+    private int chatSearchGeneration;
     private final QPushButton greetingButton;
     private final QPushButton farewellButton;
     private final QLabel statusLabel;
@@ -476,6 +479,12 @@ final class ThreadViewer implements AutoCloseable {
         });
     }
 
+    void showAutomatedSentMessage(String source, String message) {
+        if (message == null || message.isBlank()) return;
+        showSentMessage(source, message);
+        enqueueChatLine(new ChatLine(null, ownUsername, message, true));
+    }
+
     void showChatters(List<String> usernames, int total) {
         if (chattersView == null) return;
         List<String> snapshot = usernames == null ? List.of() : List.copyOf(usernames);
@@ -515,6 +524,17 @@ final class ThreadViewer implements AutoCloseable {
         heading.setObjectName("sectionTitle");
         heading.setToolTip("Click a message to open its thread • Right-click an emote to send it");
         layout.addWidget(heading);
+        QLineEdit search = new QLineEdit();
+        search.setPlaceholderText("Search chat by nickname or message…");
+        search.setClearButtonEnabled(true);
+        search.textChanged.connect(text -> {
+            chatSearchQuery.set(text == null ? "" : text.strip().toLowerCase(Locale.ROOT));
+            int generation = ++chatSearchGeneration;
+            QTimer.singleShot(120, () -> {
+                if (generation == chatSearchGeneration) applyChatFilter();
+            });
+        });
+        layout.addWidget(search);
         layout.addWidget(chatList, 1);
         QHBoxLayout composer = new QHBoxLayout();
         EmoteLineEdit input = new EmoteLineEdit();
@@ -986,7 +1006,7 @@ final class ThreadViewer implements AutoCloseable {
                     8_000
                 );
             }),
-            message -> showSentMessage("Goodbye", message)
+            message -> showAutomatedSentMessage("Goodbye", message)
         );
         window.statusBar().showMessage(status, 8_000);
     }
@@ -1217,7 +1237,10 @@ final class ThreadViewer implements AutoCloseable {
     private boolean shouldHideFromChat(ChatLine line) {
         ChatViewSettings filters = chatViewSettings.get();
         String author = line.author() == null ? "" : line.author().toLowerCase(Locale.ROOT);
-        if (line.ownMessage() || author.equals(normalizedOwnUsername)) {
+        if (!matchesChatSearch(line, chatSearchQuery.get())) {
+            return true;
+        }
+        if (line.ownMessage() || line.addressedToOwnUser() || author.equals(normalizedOwnUsername)) {
             return false;
         }
         String rawMessage = line.message() == null ? "" : line.message().strip();
@@ -1242,6 +1265,17 @@ final class ThreadViewer implements AutoCloseable {
             if (message.contains(hiddenText)) return true;
         }
         return rawMessage.codePointCount(0, rawMessage.length()) < filters.minimumMessageLength();
+    }
+
+    private static boolean matchesChatSearch(ChatLine line, String query) {
+        if (query == null || query.isBlank()) return true;
+        String author = line.author() == null ? "" : line.author();
+        String message = line.message() == null ? "" : line.message();
+        String searchable = (author + " " + message).toLowerCase(Locale.ROOT);
+        for (String term : query.split("\\s+")) {
+            if (!term.isEmpty() && !searchable.contains(term)) return false;
+        }
+        return true;
     }
 
     private String languageDetectionText(String message) {
@@ -2208,7 +2242,9 @@ final class ThreadViewer implements AutoCloseable {
                 firstLine.height() + 2,
                 item.isSelected() ? new QColor("#344057") : cached.rowBackgroundColor()
             );
-            if (line.addressedToOwnUser()) {
+            if (line.addressedToOwnUser()
+                || line.ownMessage()
+                || ownUsername.equalsIgnoreCase(line.author())) {
                 QColor borderColor = new QColor("#ffffff");
                 QPen borderPen = new QPen(borderColor, 1.0);
                 var borderRect = option.rect().adjusted(0, 0, -1, -1);

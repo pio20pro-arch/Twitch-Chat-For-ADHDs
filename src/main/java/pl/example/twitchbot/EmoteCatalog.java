@@ -19,6 +19,7 @@ import java.util.HexFormat;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
@@ -29,7 +30,10 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 final class EmoteCatalog implements AutoCloseable {
-    private static final Pattern NON_WHITESPACE_TOKEN = Pattern.compile("\\S+");
+    private static final Pattern NON_WHITESPACE_TOKEN = Pattern.compile(
+        "[^\\p{javaWhitespace}\\p{Z}\\u034F\\u061C\\u180E\\u200B-\\u200F\\u202A-\\u202E\\u2060-\\u206F\\uFEFF]+"
+    );
+    private static final Pattern CHAT_MENTION = Pattern.compile("@[A-Za-z0-9_]{1,25}[:,]?");
     private static final long CATALOG_REFRESH_INTERVAL_MS = Duration.ofHours(6).toMillis();
     private static final int IMAGE_DOWNLOAD_THREADS = 100;
     private final String channelLogin;
@@ -49,6 +53,7 @@ final class EmoteCatalog implements AutoCloseable {
         .followRedirects(HttpClient.Redirect.NORMAL)
         .build();
     private final Map<String, Emote> emotes = new ConcurrentHashMap<>();
+    private final Set<String> twitchChannelEmoteNames = ConcurrentHashMap.newKeySet();
     private final Map<String, CompletableFuture<Path>> imageLoads = new ConcurrentHashMap<>();
     private final Path imageCacheDirectory = Path.of("cache", "emotes").toAbsolutePath().normalize();
     private final Path catalogIndexPath;
@@ -63,6 +68,9 @@ final class EmoteCatalog implements AutoCloseable {
             "catalog-" + channelLogin.replaceAll("[^a-zA-Z0-9_-]", "_") + ".json"
         );
         boolean freshIndex = loadCatalogIndex();
+        if (!freshIndex || twitchChannelEmoteNames.isEmpty()) {
+            CompletableFuture.runAsync(this::loadTwitchChannelEmoteNames, catalogExecutor);
+        }
         if (freshIndex) {
             channelLoaded.set(true);
         } else {
@@ -138,7 +146,7 @@ final class EmoteCatalog implements AutoCloseable {
                         "https://static-cdn.jtvnw.net/emoticons/v2/" + id + "/default/dark/2.0",
                         true,
                         200,
-                        false
+                        twitchChannelEmoteNames.contains(code)
                     );
                 }
             } catch (RuntimeException ignored) {
@@ -194,15 +202,20 @@ final class EmoteCatalog implements AutoCloseable {
             return false;
         }
         Matcher matcher = NON_WHITESPACE_TOKEN.matcher(message);
-        boolean found = false;
+        boolean foundEmote = false;
+        boolean leadingMentionsAllowed = true;
         while (matcher.find()) {
-            found = true;
             String token = matcher.group();
+            if (leadingMentionsAllowed && CHAT_MENTION.matcher(token).matches()) {
+                continue;
+            }
+            leadingMentionsAllowed = false;
             if (!emotes.containsKey(token) && !isUnicodeEmojiToken(token)) {
                 return false;
             }
+            foundEmote = true;
         }
-        return found;
+        return foundEmote;
     }
 
     /** Recognizes phone/OS emoji without changing case-sensitive named-emote matching. */
@@ -337,7 +350,37 @@ final class EmoteCatalog implements AutoCloseable {
             "https://api.frankerfacez.com/v1/room/" + channelLogin
         ), 110));
         catalogUpdatedAction.run();
-        return sevenTvLoaded && bttvLoaded && ffzLoaded;
+        // Optional providers may legitimately return 404 for a channel. Do not discard
+        // a valid 7TV or BTTV catalog merely because FFZ has no room for that channel.
+        return sevenTvLoaded || bttvLoaded || ffzLoaded;
+    }
+
+    private void loadTwitchChannelEmoteNames() {
+        try {
+            String response = fetchText("https://decapi.me/twitch/emotes/" + channelLogin);
+            boolean changed = false;
+            for (String name : response.split("\\s+")) {
+                if (!name.isBlank()) changed |= twitchChannelEmoteNames.add(name.strip());
+            }
+            if (changed) {
+                for (String name : twitchChannelEmoteNames) {
+                    emotes.computeIfPresent(name, (ignored, current) -> current.sidebarVisible()
+                        ? current
+                        : new Emote(
+                            current.code(),
+                            current.imageUrl(),
+                            current.previewImageUrl(),
+                            current.animated(),
+                            current.priority(),
+                            true
+                        ));
+                }
+                saveCatalogIndex();
+                catalogUpdatedAction.run();
+            }
+        } catch (RuntimeException exception) {
+            System.err.println("Could not load Twitch channel emote names: " + exception.getMessage());
+        }
     }
 
     private void loadSevenTv(JsonNode root, int priority) {
@@ -457,6 +500,11 @@ final class EmoteCatalog implements AutoCloseable {
             JsonNode root = json.readTree(catalogIndexPath.toFile());
             JsonNode entries = root.path("emotes");
             if (!entries.isArray()) return false;
+            root.path("twitchChannelEmoteNames").forEach(value -> {
+                if (value.isTextual() && !value.asText().isBlank()) {
+                    twitchChannelEmoteNames.add(value.asText());
+                }
+            });
             for (JsonNode entry : entries) {
                 String code = text(entry, "code");
                 if (code.isBlank()) continue;
@@ -492,6 +540,10 @@ final class EmoteCatalog implements AutoCloseable {
             root.put("savedAt", System.currentTimeMillis());
             root.put("channel", channelLogin);
             root.put("channelLoaded", channelLoaded.get());
+            var twitchNames = root.putArray("twitchChannelEmoteNames");
+            twitchChannelEmoteNames.stream()
+                .sorted(String.CASE_INSENSITIVE_ORDER)
+                .forEach(twitchNames::add);
             var entries = root.putArray("emotes");
             emotes.values().stream()
                 .sorted(Comparator.comparing(Emote::code, String.CASE_INSENSITIVE_ORDER)
@@ -658,6 +710,14 @@ final class EmoteCatalog implements AutoCloseable {
 
     private JsonNode fetchJson(String url) {
         try {
+            return json.readTree(fetchText(url));
+        } catch (Exception exception) {
+            throw new IllegalStateException(exception.getMessage(), exception);
+        }
+    }
+
+    private String fetchText(String url) {
+        try {
             HttpRequest request = HttpRequest.newBuilder(URI.create(url))
                 .timeout(Duration.ofSeconds(10))
                 .header("User-Agent", "TwitchChatForADHDs/1.0")
@@ -667,7 +727,7 @@ final class EmoteCatalog implements AutoCloseable {
             if (response.statusCode() < 200 || response.statusCode() >= 300) {
                 throw new IllegalStateException("HTTP " + response.statusCode());
             }
-            return json.readTree(response.body());
+            return response.body();
         } catch (Exception exception) {
             throw new IllegalStateException(exception.getMessage(), exception);
         }

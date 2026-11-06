@@ -39,6 +39,7 @@ import java.util.Properties;
 import java.util.Set;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArraySet;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -55,7 +56,7 @@ import java.util.regex.Matcher;
 public final class Main {
     private static final String BOT_RESPONSE_STYLE = "\u001B[30;103m";
     private static final String CONSOLE_STYLE_RESET = "\u001B[0m";
-    private static final int FAREWELL_BATCH_SIZE = 16;
+    private static final int FAREWELL_BATCH_SIZE = 21;
     private static final Pattern ADVANCED_RULE_PREFIX = Pattern.compile("^\\{(\\d+)\\|(\\d+)\\|(\\d+)}(.*)$");
     private static final Pattern GREETED_USER_PROPERTY = Pattern.compile(
         "^\\s*greeted\\.user\\.([^=\\s]+)\\s*=\\s*true\\s*$",
@@ -76,8 +77,7 @@ public final class Main {
         Path configPath = Path.of("config.properties").toAbsolutePath().normalize();
         Properties config = loadConfig(configPath);
         String channel = normalizeChannel(requiredSetting(config, "TWITCH_CHANNEL", "channel"));
-        String botUsername = requiredSetting(config, "TWITCH_BOT_USERNAME", "bot.username")
-            .toLowerCase(Locale.ROOT);
+        String botUsername = requiredSetting(config, "TWITCH_BOT_USERNAME", "bot.username").strip();
         if (!acquireInstanceLock(botUsername, channel)) {
             System.err.printf(
                 "Another Twitch Chat for ADHDs instance is already running for #%s as %s.%n",
@@ -117,7 +117,7 @@ public final class Main {
         AtomicReference<GreetingSettings> greetingSettings = new AtomicReference<>(
             loadGreetingSettings(greetingConfigPath)
         );
-        Set<String> greetedUsers = ConcurrentHashMap.newKeySet();
+        Set<String> greetedUsers = new CopyOnWriteArraySet<>();
         greetedUsers.addAll(greetingSettings.get().greetedUsers());
         Set<String> pendingGreetings = ConcurrentHashMap.newKeySet();
         AtomicBoolean greetingsEnabled = new AtomicBoolean(false);
@@ -266,7 +266,8 @@ public final class Main {
             }
 
             messageProcessor.execute(() -> {
-            String author = event.getUser().getName();
+            String authorLogin = event.getUser().getName();
+            String author = event.getMessageEvent().getUserDisplayName().orElse(authorLogin);
             GreetingSettings currentGreetingSettings = greetingSettings.get();
             threadViewer.onMessage(
                 event,
@@ -274,14 +275,15 @@ public final class Main {
                 watchedUsers.get()
             );
             String authenticatedUsername = credential.getUserName();
-            boolean isBotUser = author.equalsIgnoreCase(botUsername)
-                || (authenticatedUsername != null && author.equalsIgnoreCase(authenticatedUsername));
+            boolean isBotUser = authorLogin.equalsIgnoreCase(botUsername)
+                || (authenticatedUsername != null && authorLogin.equalsIgnoreCase(authenticatedUsername));
             if (isBotUser) {
                 rememberSentResponse(sentResponses, event.getMessage());
                 return; // The bot never replies to itself.
             }
 
-            String normalizedAuthor = author.toLowerCase(Locale.ROOT);
+            String normalizedAuthor = authorLogin.toLowerCase(Locale.ROOT);
+            refreshGreetedUserCasing(greetedUsers, normalizedAuthor, author, greetingConfigPath);
             // Twitch replies belong exclusively in the thread window.
             // They do not trigger greetings, phrase counters, or automatic responses.
             if (event.getReplyInfo() != null) {
@@ -292,7 +294,7 @@ public final class Main {
                 && !excludedUsers.get().contains(normalizedAuthor)
                 && (currentGreetingSettings.mode().equals("all")
                     || currentGreetingSettings.allowedUsers().contains(normalizedAuthor))
-                && !greetedUsers.contains(normalizedAuthor)
+                && !containsIgnoreCase(greetedUsers, normalizedAuthor)
                 && pendingGreetings.add(normalizedAuthor)) {
                 ResponseSettings currentResponseSettings = responseSettings.get();
                 scheduleGreeting(
@@ -308,7 +310,7 @@ public final class Main {
                     responseExecutor,
                     currentResponseSettings,
                     sentResponses,
-                    greeting -> threadViewer.showSentMessage("Greetings", greeting)
+                    greeting -> threadViewer.showAutomatedSentMessage("Greetings", greeting)
                 );
                 return;
             }
@@ -361,7 +363,7 @@ public final class Main {
                         if (client.getChat().sendMessage(channel, response)) {
                             rememberSentResponse(sentResponses, response);
                             printBotResponse(channel, botUsername, response, scheduledDelay);
-                            threadViewer.showSentMessage("Chatbox Spammer", response);
+                            threadViewer.showAutomatedSentMessage("Chatbox Spammer", response);
                         } else {
                             System.err.println("The Chatbox Spammer message was not sent to Twitch.");
                         }
@@ -768,7 +770,9 @@ public final class Main {
             greetingSettings.set(updated);
             // Never forget users greeted by this running instance during an automatic reload.
             // Clearing here created a short race in which another message could schedule a duplicate greeting.
-            greetedUsers.addAll(updated.greetedUsers());
+            for (String username : updated.greetedUsers()) {
+                if (!containsIgnoreCase(greetedUsers, username)) greetedUsers.add(username);
+            }
             System.out.printf(
                 "Reloaded user settings: command %s, mode %s, greetings %d, goodbyes %d, allowed users %d.%n",
                 updated.toggleCommand(),
@@ -871,10 +875,9 @@ public final class Main {
 
         List<String> users = greetedUsers.stream()
             .filter(username -> !excludedUsers.contains(username.toLowerCase(Locale.ROOT)))
-            .sorted(String.CASE_INSENSITIVE_ORDER)
             .toList();
         if (users.isEmpty()) {
-            System.out.println("No users are stored as greeted.user.*.");
+            System.out.println("No users are stored under greeted.users.");
             afterFarewell.accept(true);
             return "No users to say goodbye to.";
         }
@@ -967,29 +970,10 @@ public final class Main {
             .map(username -> username.toLowerCase(Locale.ROOT))
             .collect(java.util.stream.Collectors.toUnmodifiableSet());
         try {
-            List<String> retained = Files.readAllLines(path, StandardCharsets.UTF_8).stream()
-                .filter(line -> {
-                    Matcher matcher = GREETED_USER_PROPERTY.matcher(line);
-                    return !matcher.matches()
-                        || !normalized.contains(matcher.group(1).toLowerCase(Locale.ROOT));
-                })
-                .toList();
-            Path temporary = Files.createTempFile(path.getParent(), path.getFileName().toString(), ".tmp");
-            try {
-                Files.write(temporary, retained, StandardCharsets.UTF_8, StandardOpenOption.TRUNCATE_EXISTING);
-                try {
-                    Files.move(
-                        temporary,
-                        path,
-                        StandardCopyOption.REPLACE_EXISTING,
-                        StandardCopyOption.ATOMIC_MOVE
-                    );
-                } catch (AtomicMoveNotSupportedException ignored) {
-                    Files.move(temporary, path, StandardCopyOption.REPLACE_EXISTING);
-                }
-            } finally {
-                Files.deleteIfExists(temporary);
-            }
+            Set<String> retained = loadGreetedUsers(path).stream()
+                .filter(username -> !normalized.contains(username.toLowerCase(Locale.ROOT)))
+                .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
+            saveGreetedUsers(path, retained);
         } catch (IOException exception) {
             System.err.println("Could not remove users who received a goodbye from " + path + ": " + exception.getMessage());
         }
@@ -1110,8 +1094,8 @@ public final class Main {
             try {
                 if (client.getChat().sendMessage(channel, greeting)) {
                     rememberSentResponse(sentResponses, greeting);
-                    greetedUsers.add(normalizedAuthor);
-                    appendGreetedUser(greetedUsersPath, normalizedAuthor);
+                    if (!containsIgnoreCase(greetedUsers, author)) greetedUsers.add(author);
+                    appendGreetedUser(greetedUsersPath, author);
                     printBotResponse(channel, botUsername, greeting, scheduledDelay);
                     onSent.accept(greeting);
                 }
@@ -1121,36 +1105,43 @@ public final class Main {
         }, scheduledDelay, TimeUnit.MILLISECONDS);
     }
 
+    private static boolean containsIgnoreCase(Set<String> values, String candidate) {
+        if (candidate == null) return false;
+        for (String value : values) {
+            if (value.equalsIgnoreCase(candidate)) return true;
+        }
+        return false;
+    }
+
+    private static synchronized void refreshGreetedUserCasing(
+        Set<String> greetedUsers,
+        String normalizedUsername,
+        String displayUsername,
+        Path path
+    ) {
+        String stored = greetedUsers.stream()
+            .filter(username -> username.equalsIgnoreCase(normalizedUsername))
+            .findFirst()
+            .orElse(null);
+        if (stored == null || stored.equals(displayUsername)) return;
+
+        List<String> reordered = greetedUsers.stream()
+            .map(username -> username.equalsIgnoreCase(normalizedUsername) ? displayUsername : username)
+            .toList();
+        greetedUsers.clear();
+        greetedUsers.addAll(reordered);
+        appendGreetedUser(path, displayUsername);
+    }
+
     private static synchronized void appendGreetedUser(Path path, String username) {
         try {
-            List<String> lines = Files.exists(path)
-                ? new ArrayList<>(Files.readAllLines(path, StandardCharsets.UTF_8))
-                : new ArrayList<>();
-            String normalizedUsername = username.toLowerCase(Locale.ROOT);
-            boolean alreadyStored = lines.stream().anyMatch(line -> {
-                Matcher matcher = GREETED_USER_PROPERTY.matcher(line);
-                return matcher.matches()
-                    && matcher.group(1).toLowerCase(Locale.ROOT).equals(normalizedUsername);
-            });
-            if (alreadyStored) return;
-
-            lines.add("greeted.user." + username + "=true");
-            Path temporary = Files.createTempFile(path.getParent(), path.getFileName().toString(), ".tmp");
-            try {
-                Files.write(temporary, lines, StandardCharsets.UTF_8, StandardOpenOption.TRUNCATE_EXISTING);
-                try {
-                    Files.move(
-                        temporary,
-                        path,
-                        StandardCopyOption.REPLACE_EXISTING,
-                        StandardCopyOption.ATOMIC_MOVE
-                    );
-                } catch (AtomicMoveNotSupportedException ignored) {
-                    Files.move(temporary, path, StandardCopyOption.REPLACE_EXISTING);
-                }
-            } finally {
-                Files.deleteIfExists(temporary);
-            }
+            Set<String> storedUsers = loadGreetedUsers(path);
+            List<String> updated = storedUsers.stream()
+                .map(stored -> stored.equalsIgnoreCase(username) ? username : stored)
+                .collect(java.util.stream.Collectors.toCollection(ArrayList::new));
+            if (!containsIgnoreCase(storedUsers, username)) updated.add(username);
+            if (updated.equals(new ArrayList<>(storedUsers))) return;
+            saveGreetedUsers(path, new LinkedHashSet<>(updated));
         } catch (IOException exception) {
             System.err.println("Could not save the user to " + path + ": " + exception.getMessage());
         }
@@ -1352,16 +1343,90 @@ public final class Main {
             .collect(java.util.stream.Collectors.toUnmodifiableSet());
     }
 
-    private static Set<String> propertySuffixesWithTrueValue(Properties properties, String prefix) {
-        Set<String> result = new HashSet<>();
-        for (String name : properties.stringPropertyNames()) {
-            if (name.startsWith(prefix)
-                && Boolean.parseBoolean(properties.getProperty(name))
-                && name.length() > prefix.length()) {
-                result.add(name.substring(prefix.length()).toLowerCase(Locale.ROOT));
+    private static Set<String> loadGreetedUsers(Path path) throws IOException {
+        Set<String> result = new LinkedHashSet<>();
+        if (!Files.isRegularFile(path)) return result;
+        boolean insideList = false;
+        for (String line : Files.readAllLines(path, StandardCharsets.UTF_8)) {
+            String trimmed = line.strip();
+            if (trimmed.isEmpty() || trimmed.startsWith("#") || trimmed.startsWith("!")) continue;
+
+            Matcher matcher = GREETED_USER_PROPERTY.matcher(line);
+            if (matcher.matches() && !containsIgnoreCase(result, matcher.group(1))) {
+                result.add(matcher.group(1));
+                continue;
+            }
+
+            int separator = line.indexOf('=');
+            if (separator >= 0) {
+                String key = line.substring(0, separator).strip();
+                insideList = key.equals("greeted.users");
+                if (insideList) {
+                    String inlineValue = line.substring(separator + 1).strip();
+                    for (String username : inlineValue.split("[,\\s]+")) {
+                        if (!username.isBlank() && !containsIgnoreCase(result, username)) result.add(username);
+                    }
+                }
+                continue;
+            }
+            if (insideList && !containsIgnoreCase(result, trimmed)) {
+                result.add(trimmed);
             }
         }
         return result;
+    }
+
+    private static void saveGreetedUsers(Path path, Set<String> usernames) throws IOException {
+        List<String> original = Files.exists(path)
+            ? Files.readAllLines(path, StandardCharsets.UTF_8)
+            : List.of();
+        List<String> retained = new ArrayList<>();
+        boolean insideList = false;
+        for (String line : original) {
+            if (GREETED_USER_PROPERTY.matcher(line).matches()) continue;
+
+            String trimmed = line.strip();
+            if (trimmed.startsWith("#") || trimmed.startsWith("!") || trimmed.isEmpty()) {
+                retained.add(line);
+                continue;
+            }
+            int separator = line.indexOf('=');
+            if (separator >= 0) {
+                String key = line.substring(0, separator).strip();
+                if (key.equals("greeted.users")) {
+                    insideList = true;
+                    continue;
+                }
+                insideList = false;
+                retained.add(line);
+                continue;
+            }
+            if (!insideList) retained.add(line);
+        }
+
+        while (!retained.isEmpty() && retained.get(retained.size() - 1).isBlank()) {
+            retained.remove(retained.size() - 1);
+        }
+        retained.add("");
+        retained.add("greeted.users=");
+        retained.addAll(usernames);
+
+        Path temporary = Files.createTempFile(path.getParent(), path.getFileName().toString(), ".tmp");
+        try {
+            Files.write(temporary, retained, StandardCharsets.UTF_8, StandardOpenOption.TRUNCATE_EXISTING);
+            try {
+                Files.move(
+                    temporary,
+                    path,
+                    StandardCopyOption.REPLACE_EXISTING,
+                    StandardCopyOption.ATOMIC_MOVE
+                );
+            } catch (AtomicMoveNotSupportedException ignored) {
+                Files.move(temporary, path, StandardCopyOption.REPLACE_EXISTING);
+            }
+        } finally {
+            Files.deleteIfExists(temporary);
+        }
     }
 
     private static Properties loadConfig(Path path) throws IOException {
@@ -1412,14 +1477,14 @@ public final class Main {
             allowedUsers.add(username.toLowerCase(Locale.ROOT));
         }
 
-        Set<String> alreadyGreeted = propertySuffixesWithTrueValue(greetingConfig, "greeted.user.");
+        Set<String> alreadyGreeted = loadGreetedUsers(path);
         return new GreetingSettings(
             toggleCommand,
             mode,
             List.copyOf(messages),
             List.copyOf(farewellMessages),
             Set.copyOf(allowedUsers),
-            Set.copyOf(alreadyGreeted)
+            Collections.unmodifiableSet(new LinkedHashSet<>(alreadyGreeted))
         );
     }
 
