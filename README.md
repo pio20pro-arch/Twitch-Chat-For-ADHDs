@@ -3,7 +3,7 @@ Created as proof of concept.
 This app shows one Twitch channel in a separate, lightweight window. It helps users stay focused on reading and offers a wide range of customizable features.
 It is not perfect but good enouth to play with
 
-<img width=40% height=40% alt="image" src="https://github.com/user-attachments/assets/47084054-1a75-431b-b881-7eb659de1ae0" />
+<img width=40% height=40% alt="image" src="https://github.com/user-attachments/assets/add9d11c-6d85-4f8d-8028-98d65e2d41e6" />
 
 ## How to start the application
 
