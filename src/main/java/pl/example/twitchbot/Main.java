@@ -56,7 +56,6 @@ import java.util.regex.Matcher;
 public final class Main {
     private static final String BOT_RESPONSE_STYLE = "\u001B[30;103m";
     private static final String CONSOLE_STYLE_RESET = "\u001B[0m";
-    private static final int FAREWELL_BATCH_SIZE = 21;
     private static final Pattern ADVANCED_RULE_PREFIX = Pattern.compile("^\\{(\\d+)\\|(\\d+)\\|(\\d+)}(.*)$");
     private static final Pattern GREETED_USER_PROPERTY = Pattern.compile(
         "^\\s*greeted\\.user\\.([^=\\s]+)\\s*=\\s*true\\s*$",
@@ -94,6 +93,7 @@ public final class Main {
         boolean emoteColumnEnabled = onOffSetting(config, "emotes.column", true);
         boolean emoteAnimationEnabled = onOffSetting(config, "emotes.animation", true);
         boolean chatEmotesEnabled = onOffSetting(config, "emotes.chat", true);
+        boolean sentByMeEnabled = onOffSetting(config, "sent.by.me.tab", false);
         int emoteIconSize = Math.max(20, Math.min(64,
             Math.toIntExact(integerSetting(config, "emotes.icon.size", 32))));
         List<String> spellcheckLanguages = commaSeparatedSetting(config, "spellcheck.languages");
@@ -204,11 +204,13 @@ public final class Main {
             spellcheckLanguages,
             grammarLanguages,
             moderatorMode,
+            sentByMeEnabled,
             (onFinished, onSent) -> {
                 greetingsEnabled.set(false);
                 GreetingSettings current = greetingSettings.get();
                 return scheduleFarewellBatches(
                     current.farewellMessages(),
+                    current.farewellBatchSize(),
                     greetedUsers,
                     excludedUsers.get(),
                     farewellInProgress,
@@ -297,12 +299,16 @@ public final class Main {
                 && !containsIgnoreCase(greetedUsers, normalizedAuthor)
                 && pendingGreetings.add(normalizedAuthor)) {
                 ResponseSettings currentResponseSettings = responseSettings.get();
+                List<String> selectedGreetingMessages = greetingMessagesFor(
+                    currentGreetingSettings.messages(),
+                    authorLogin
+                );
                 scheduleGreeting(
                     channel,
                     author,
                     normalizedAuthor,
                     botUsername,
-                    currentGreetingSettings.messages(),
+                    selectedGreetingMessages,
                     greetedUsers,
                     pendingGreetings,
                     greetingConfigPath,
@@ -651,6 +657,7 @@ public final class Main {
         int fontPointSize = Math.toIntExact(integerSetting(config, "chat.font.size", 11));
         int lineSpacing = Math.toIntExact(integerSetting(config, "chat.line.spacing", 2));
         int minimumMessageLength = Math.toIntExact(integerSetting(config, "chat.filter.min.length", 0));
+        long chatHistoryMinutes = integerSetting(config, "chat.history.minutes", 30);
         if (fontPointSize < 8 || fontPointSize > 24) {
             throw new IllegalArgumentException("chat.font.size must be a number from 8 to 24.");
         }
@@ -659,6 +666,9 @@ public final class Main {
         }
         if (minimumMessageLength < 0 || minimumMessageLength > 100) {
             throw new IllegalArgumentException("chat.filter.min.length must be a number from 0 to 100.");
+        }
+        if (chatHistoryMinutes < 1 || chatHistoryMinutes > 1_440) {
+            throw new IllegalArgumentException("chat.history.minutes must be a number from 1 to 1440.");
         }
         return new ThreadViewer.ChatViewSettings(
             removeEmoteOnly,
@@ -671,7 +681,8 @@ public final class Main {
             hiddenTexts,
             minimumMessageLength,
             fontPointSize,
-            lineSpacing
+            lineSpacing,
+            Duration.ofMinutes(chatHistoryMinutes).toMillis()
         );
     }
 
@@ -846,6 +857,7 @@ public final class Main {
 
     private static String scheduleFarewellBatches(
         List<String> farewellMessages,
+        int farewellBatchSize,
         Set<String> greetedUsers,
         Set<String> excludedUsers,
         AtomicBoolean farewellInProgress,
@@ -892,19 +904,19 @@ public final class Main {
             .filter(template -> !template.isEmpty())
             .distinct()
             .toList();
-        int batchCount = (users.size() + FAREWELL_BATCH_SIZE - 1) / FAREWELL_BATCH_SIZE;
+        int batchCount = (users.size() + farewellBatchSize - 1) / farewellBatchSize;
         AtomicInteger pendingBatches = new AtomicInteger(batchCount);
         AtomicBoolean allBatchesSent = new AtomicBoolean(true);
         System.out.printf(
             "Scheduled goodbye for %d users in %d messages (up to %d users per message).%n",
             users.size(),
             batchCount,
-            FAREWELL_BATCH_SIZE
+            farewellBatchSize
         );
 
         int previousTemplateIndex = -1;
-        for (int start = 0; start < users.size(); start += FAREWELL_BATCH_SIZE) {
-            int end = Math.min(start + FAREWELL_BATCH_SIZE, users.size());
+        for (int start = 0; start < users.size(); start += farewellBatchSize) {
+            int end = Math.min(start + farewellBatchSize, users.size());
             List<String> batchUsers = List.copyOf(users.subList(start, end));
             int templateIndex;
             if (farewellTemplates.size() == 1) {
@@ -1103,6 +1115,24 @@ public final class Main {
                 pendingGreetings.remove(normalizedAuthor);
             }
         }, scheduledDelay, TimeUnit.MILLISECONDS);
+    }
+
+    private static List<String> greetingMessagesFor(List<String> configuredMessages, String username) {
+        List<String> personal = new ArrayList<>();
+        List<String> general = new ArrayList<>();
+        for (String configured : configuredMessages) {
+            int separator = configured.indexOf('|');
+            if (separator > 0) {
+                String target = configured.substring(0, separator).strip();
+                String message = configured.substring(separator + 1).strip();
+                if (target.matches("[A-Za-z0-9_]{1,25}")) {
+                    if (!message.isEmpty() && target.equalsIgnoreCase(username)) personal.add(message);
+                    continue;
+                }
+            }
+            if (!configured.isBlank()) general.add(configured);
+        }
+        return personal.isEmpty() ? List.copyOf(general) : List.copyOf(personal);
     }
 
     private static boolean containsIgnoreCase(Set<String> values, String candidate) {
@@ -1462,6 +1492,10 @@ public final class Main {
         if (farewellMessages.isEmpty()) {
             throw new IllegalArgumentException("No messages are defined under farewell.messages=.");
         }
+        int farewellBatchSize = Math.toIntExact(integerSetting(greetingConfig, "farewell.users.per.message", 21));
+        if (farewellBatchSize < 1 || farewellBatchSize > 100) {
+            throw new IllegalArgumentException("farewell.users.per.message must be a number from 1 to 100.");
+        }
 
         Set<String> allowedUsers = new HashSet<>();
         for (String username : loadMultilineSection(path, "allowed.users")) {
@@ -1483,6 +1517,7 @@ public final class Main {
             mode,
             List.copyOf(messages),
             List.copyOf(farewellMessages),
+            farewellBatchSize,
             Set.copyOf(allowedUsers),
             Collections.unmodifiableSet(new LinkedHashSet<>(alreadyGreeted))
         );
@@ -1596,6 +1631,7 @@ public final class Main {
         String mode,
         List<String> messages,
         List<String> farewellMessages,
+        int farewellBatchSize,
         Set<String> allowedUsers,
         Set<String> greetedUsers
     ) {

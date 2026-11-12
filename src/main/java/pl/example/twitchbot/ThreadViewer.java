@@ -83,7 +83,6 @@ import io.qt.widgets.QWidget;
 
 /** Qt 6 window containing the complete chat and the existing watched/thread views. */
 final class ThreadViewer implements AutoCloseable {
-    private static final long CHAT_RETENTION_MS = Duration.ofMinutes(30).toMillis();
     private static final int MAX_CACHED_MESSAGES = 10_000;
     private static final int MAX_VISIBLE_CHAT_LINES = 1_500;
     private static final int MAX_PENDING_CHAT_LINES = 2_000;
@@ -197,6 +196,7 @@ final class ThreadViewer implements AutoCloseable {
     private boolean chatScrollStartScheduled;
     private boolean watchedScrollScheduled;
     private boolean closed;
+    private final int threadTabStartIndex;
 
     ThreadViewer(
         String ownUsername,
@@ -214,6 +214,7 @@ final class ThreadViewer implements AutoCloseable {
         List<String> spellcheckLanguages,
         List<String> grammarLanguages,
         boolean moderatorMode,
+        boolean sentByMeEnabled,
         FarewellStarter farewellStarter
     ) {
         this.ownUsername = ownUsername;
@@ -296,7 +297,8 @@ final class ThreadViewer implements AutoCloseable {
         tabs = new WrappingTabWidget();
         tabs.setObjectName("threadTabs");
         tabs.addPermanentTab(createWatchedPanel(), "Watched");
-        tabs.addPermanentTab(createSentMessagesPanel(), "Sent by me");
+        if (sentByMeEnabled) tabs.addPermanentTab(createSentMessagesPanel(), "Sent by me");
+        threadTabStartIndex = sentByMeEnabled ? 2 : 1;
         QWidget chattersPanel;
         if (moderatorMode) {
             chattersView = createChattersView();
@@ -1207,7 +1209,7 @@ final class ThreadViewer implements AutoCloseable {
     private TrimResult trimRecentChatLines() {
         boolean removed = false;
         int visiblePixels = 0;
-        long cutoff = System.currentTimeMillis() - CHAT_RETENTION_MS;
+        long cutoff = System.currentTimeMillis() - chatViewSettings.get().historyRetentionMs();
         while (!recentChatLines.isEmpty() && recentChatLines.peekFirst().receivedAtMillis() < cutoff) {
             visiblePixels += removeOldestChatLine();
             removed = true;
@@ -1473,7 +1475,7 @@ final class ThreadViewer implements AutoCloseable {
         layout.addLayout(composer);
 
         String tabTitle = shortTitle(title);
-        int tabIndex = tabs.insertTab(2, panel, tabTitle);
+        int tabIndex = tabs.insertTab(threadTabStartIndex, panel, tabTitle);
         tabs.setTabToolTip(tabIndex, "Thread started by " + title);
         ThreadTab threadTab = new ThreadTab(rootId, panel, transcript, input, tabTitle);
         transcript.setReplyAction(threadTab::selectReplyTarget);
@@ -1503,7 +1505,7 @@ final class ThreadViewer implements AutoCloseable {
     }
 
     private void closeTabAt(int index) {
-        if (index <= 1) return;
+        if (index < threadTabStartIndex) return;
         QWidget panel = tabs.widget(index);
         for (Map.Entry<String, ThreadTab> entry : new ArrayList<>(threadTabs.entrySet())) {
             if (entry.getValue().panel == panel) {
@@ -1574,7 +1576,7 @@ final class ThreadViewer implements AutoCloseable {
     }
 
     private void rememberMessage(ChatLine line) {
-        long oldestAllowed = System.currentTimeMillis() - CHAT_RETENTION_MS;
+        long oldestAllowed = System.currentTimeMillis() - chatViewSettings.get().historyRetentionMs();
         synchronized (messages) {
             messages.put(line.id(), line);
             var iterator = messages.entrySet().iterator();
@@ -1967,7 +1969,8 @@ final class ThreadViewer implements AutoCloseable {
         List<String> hiddenTexts,
         int minimumMessageLength,
         int fontPointSize,
-        int lineSpacing
+        int lineSpacing,
+        long historyRetentionMs
     ) {
         ChatViewSettings {
             threadAutoOpenMode = threadAutoOpenMode.toLowerCase(Locale.ROOT);
